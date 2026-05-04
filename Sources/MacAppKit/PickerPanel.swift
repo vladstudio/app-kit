@@ -97,12 +97,13 @@ open class PickerPanel<Item: Pickable>: NSPanel, NSTextFieldDelegate, NSTableVie
         }
         refilter()
         center()
+        // Accessory apps need ignoringOtherApps:true to take focus reliably.
+        NSApp.activate(ignoringOtherApps: true)
         makeKeyAndOrderFront(nil)
         makeFirstResponder(search)
         if searchKey != nil, !search.stringValue.isEmpty {
             search.currentEditor()?.selectAll(nil)
         }
-        NSApp.activate()
     }
 
     public func dismiss() {
