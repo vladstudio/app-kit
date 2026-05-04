@@ -6,6 +6,7 @@ public enum Permission: Sendable {
     case accessibility
     case inputMonitoring
     case microphone
+    case screenRecording
 }
 
 public enum Permissions {
@@ -19,6 +20,8 @@ public enum Permissions {
             return IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
         case .microphone:
             return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+        case .screenRecording:
+            return CGPreflightScreenCaptureAccess()
         }
     }
 
@@ -34,6 +37,8 @@ public enum Permissions {
             IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
         case .microphone:
             AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        case .screenRecording:
+            CGRequestScreenCaptureAccess()
         }
     }
 
@@ -48,6 +53,8 @@ public enum Permissions {
             url = "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
         case .microphone:
             url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+        case .screenRecording:
+            url = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
         }
         NSWorkspace.shared.open(URL(string: url)!)
     }

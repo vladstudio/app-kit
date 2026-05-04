@@ -1,17 +1,19 @@
 import AppKit
 
 /// Generic floating picker panel with search field and table view.
-/// Subclass or use the `onPick` callback to handle selection.
-open class PickerPanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
+/// Subclass or configure with closures to customize filtering, cell rendering, and selection handling.
+open class PickerPanel<Item: Pickable>: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     public let search = NSTextField()
     public let table = NSTableView()
-    public private(set) var filtered: [String] = []
-    private var all: [String] = []
+    public private(set) var filtered: [Item] = []
+    private var all: [Item] = []
     private var prevApp: NSRunningApplication?
-    private var filterFn: ((String, String) -> Bool)?
-    private var pickHandler: ((Int, String) -> Void)?
+    private var filterFn: ((String, [Item]) -> [Item])?
+    private var pickHandler: ((Int, Item) -> Void)?
+    private let searchKey: String?
 
-    public init(title panelTitle: String, placeholder: String) {
+    public init(title panelTitle: String, placeholder: String, searchKey: String? = nil, appearance: NSAppearance? = nil) {
+        self.searchKey = searchKey
         super.init(contentRect: NSRect(x: 0, y: 0, width: 640, height: 400),
                    styleMask: [.titled, .closable, .fullSizeContentView, .utilityWindow],
                    backing: .buffered, defer: false)
@@ -21,6 +23,7 @@ open class PickerPanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, NST
         isMovableByWindowBackground = true
         isReleasedWhenClosed = false
         animationBehavior = .none
+        if let appearance { self.appearance = appearance }
 
         let cv = contentView!
 
@@ -71,30 +74,41 @@ open class PickerPanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, NST
 
     // MARK: - Configuration
 
-    /// Set a custom filter function. Default is case-insensitive contains.
-    public func setFilter(_ fn: @escaping (String, String) -> Bool) {
+    /// Set a custom filter function. Takes (query, all items) and returns filtered + sorted items.
+    /// Default is case-insensitive contains on `searchText`.
+    public func setFilter(_ fn: @escaping (String, [Item]) -> [Item]) {
         filterFn = fn
     }
 
-    /// Set the selection handler. Called with (row index, item string).
-    public func onPick(_ handler: @escaping (Int, String) -> Void) {
+    /// Set the selection handler. Called with (row index, selected item) after dismiss.
+    public func onPick(_ handler: @escaping (Int, Item) -> Void) {
         pickHandler = handler
     }
 
     // MARK: - Show / Dismiss
 
-    public func show(items: [String]) {
+    public func show(items: [Item]) {
         all = items
         prevApp = NSWorkspace.shared.frontmostApplication
-        search.stringValue = ""
+        if let key = searchKey {
+            search.stringValue = UserDefaults.standard.string(forKey: key) ?? ""
+        } else {
+            search.stringValue = ""
+        }
         refilter()
         center()
         makeKeyAndOrderFront(nil)
         makeFirstResponder(search)
+        if searchKey != nil, !search.stringValue.isEmpty {
+            search.currentEditor()?.selectAll(nil)
+        }
         NSApp.activate()
     }
 
     public func dismiss() {
+        if let key = searchKey {
+            UserDefaults.standard.set(search.stringValue, forKey: key)
+        }
         orderOut(nil)
         prevApp?.activate()
     }
@@ -105,9 +119,10 @@ open class PickerPanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, NST
         let q = search.stringValue
         if q.isEmpty {
             filtered = all
+        } else if let fn = filterFn {
+            filtered = fn(q, all)
         } else {
-            let match = filterFn ?? { item, query in item.localizedCaseInsensitiveContains(query) }
-            filtered = all.filter { match($0, q) }
+            filtered = all.filter { $0.searchText.localizedCaseInsensitiveContains(q) }
         }
         table.reloadData()
         if !filtered.isEmpty { table.selectRowIndexes([0], byExtendingSelection: false) }
@@ -123,7 +138,12 @@ open class PickerPanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, NST
 
     // MARK: - NSTextFieldDelegate
 
-    public func controlTextDidChange(_ n: Notification) { refilter() }
+    public func controlTextDidChange(_ n: Notification) {
+        if let key = searchKey {
+            UserDefaults.standard.set(search.stringValue, forKey: key)
+        }
+        refilter()
+    }
 
     public func control(_ control: NSControl, textView: NSTextView,
                         doCommandBy sel: Selector) -> Bool {
@@ -148,19 +168,19 @@ open class PickerPanel: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, NST
 
     public func numberOfRows(in tableView: NSTableView) -> Int { filtered.count }
 
-    private static let cellID = NSUserInterfaceItemIdentifier("item")
+    private var cellID: NSUserInterfaceItemIdentifier { NSUserInterfaceItemIdentifier("item") }
 
-    /// Override this to customize cell rendering.
+    /// Override to customize cell rendering.
     open func tableView(_ tv: NSTableView, viewFor col: NSTableColumn?, row: Int) -> NSView? {
-        let text = filtered[row]
+        let text = filtered[row].displayText
 
-        if let cell = tv.makeView(withIdentifier: Self.cellID, owner: nil) as? NSTableCellView {
+        if let cell = tv.makeView(withIdentifier: cellID, owner: nil) as? NSTableCellView {
             cell.textField?.stringValue = text
             return cell
         }
 
         let cell = NSTableCellView()
-        cell.identifier = Self.cellID
+        cell.identifier = cellID
 
         let tf = NSTextField(labelWithString: text)
         tf.lineBreakMode = .byTruncatingTail
