@@ -9,8 +9,9 @@ public enum LoginItem {
         try? isEnabled ? SMAppService.mainApp.unregister() : SMAppService.mainApp.register()
     }
 
-    public static func enable() {
-        try? SMAppService.mainApp.register()
+    @discardableResult
+    public static func enable() -> Bool {
+        (try? SMAppService.mainApp.register()) != nil
     }
 
     public static func disable() {
@@ -18,9 +19,9 @@ public enum LoginItem {
     }
 
     /// Enable on first launch, then respect user's choice.
+    /// The flag is only set after registration succeeds, so failures retry next launch.
     public static func enableOnFirstLaunch(key: String = "loginItemConfigured") {
-        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        guard !UserDefaults.standard.bool(forKey: key), enable() else { return }
         UserDefaults.standard.set(true, forKey: key)
-        enable()
     }
 }

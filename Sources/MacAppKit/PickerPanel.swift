@@ -5,12 +5,17 @@ import AppKit
 open class PickerPanel<Item: Pickable>: NSPanel, NSTextFieldDelegate, NSTableViewDataSource, NSTableViewDelegate {
     public let search = NSTextField()
     public let table = NSTableView()
+    /// Optional one-line hint shown between the separator and the list.
+    public let hintLabel = NSTextField(labelWithString: "")
     public private(set) var filtered: [Item] = []
     private var all: [Item] = []
     private var prevApp: NSRunningApplication?
     private var filterFn: ((String, [Item]) -> [Item])?
     private var pickHandler: ((Int, Item) -> Void)?
+    private var emptyHandler: ((String) -> Void)?
     private let searchKey: String?
+    private var scrollTopToSep: NSLayoutConstraint!
+    private var scrollTopToHint: NSLayoutConstraint!
 
     public init(title panelTitle: String, placeholder: String, searchKey: String? = nil, appearance: NSAppearance? = nil) {
         self.searchKey = searchKey
@@ -20,6 +25,9 @@ open class PickerPanel<Item: Pickable>: NSPanel, NSTextFieldDelegate, NSTableVie
         title = panelTitle
         titlebarAppearsTransparent = true
         level = .floating
+        // Panels default to hiding while their app is inactive, and activation at launch is
+        // cooperative (macOS 14+) and often refused, leaving the panel invisible until reopen.
+        hidesOnDeactivate = false
         isMovableByWindowBackground = true
         isReleasedWhenClosed = false
         animationBehavior = .none
@@ -39,6 +47,13 @@ open class PickerPanel<Item: Pickable>: NSPanel, NSTextFieldDelegate, NSTableVie
         sep.translatesAutoresizingMaskIntoConstraints = false
         cv.addSubview(sep)
 
+        hintLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        hintLabel.textColor = .secondaryLabelColor
+        hintLabel.lineBreakMode = .byTruncatingTail
+        hintLabel.translatesAutoresizingMaskIntoConstraints = false
+        hintLabel.isHidden = true
+        cv.addSubview(hintLabel)
+
         let col = NSTableColumn(identifier: .init("c"))
         col.resizingMask = .autoresizingMask
         table.addTableColumn(col)
@@ -56,6 +71,8 @@ open class PickerPanel<Item: Pickable>: NSPanel, NSTextFieldDelegate, NSTableVie
         scroll.translatesAutoresizingMaskIntoConstraints = false
         cv.addSubview(scroll)
 
+        scrollTopToSep = scroll.topAnchor.constraint(equalTo: sep.bottomAnchor)
+        scrollTopToHint = scroll.topAnchor.constraint(equalTo: hintLabel.bottomAnchor, constant: 6)
         NSLayoutConstraint.activate([
             search.topAnchor.constraint(equalTo: cv.topAnchor, constant: 28),
             search.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 12),
@@ -63,7 +80,10 @@ open class PickerPanel<Item: Pickable>: NSPanel, NSTextFieldDelegate, NSTableVie
             sep.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 6),
             sep.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
             sep.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
-            scroll.topAnchor.constraint(equalTo: sep.bottomAnchor),
+            hintLabel.topAnchor.constraint(equalTo: sep.bottomAnchor, constant: 8),
+            hintLabel.leadingAnchor.constraint(equalTo: cv.leadingAnchor, constant: 12),
+            hintLabel.trailingAnchor.constraint(equalTo: cv.trailingAnchor, constant: -12),
+            scrollTopToSep,
             scroll.leadingAnchor.constraint(equalTo: cv.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: cv.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: cv.bottomAnchor),
@@ -85,11 +105,31 @@ open class PickerPanel<Item: Pickable>: NSPanel, NSTextFieldDelegate, NSTableVie
         pickHandler = handler
     }
 
+    /// Show a one-line hint between the separator and the list. Pass nil to hide.
+    public func setHint(_ text: String?) {
+        hintLabel.stringValue = text ?? ""
+        hintLabel.isHidden = (text ?? "").isEmpty
+        if hintLabel.isHidden {
+            NSLayoutConstraint.deactivate([scrollTopToHint])
+            NSLayoutConstraint.activate([scrollTopToSep])
+        } else {
+            NSLayoutConstraint.deactivate([scrollTopToSep])
+            NSLayoutConstraint.activate([scrollTopToHint])
+        }
+    }
+
+    /// Set the handler called when Enter is pressed while the filtered list is empty.
+    /// Receives the current query text. Useful for "create from search" flows.
+    public func onEmptyPick(_ handler: @escaping (String) -> Void) {
+        emptyHandler = handler
+    }
+
     // MARK: - Show / Dismiss
 
-    public func show(items: [Item]) {
+    /// `returnTo` overrides the app re-activated on dismiss (default: the current frontmost app).
+    public func show(items: [Item], returnTo app: NSRunningApplication? = nil) {
         all = items
-        prevApp = NSWorkspace.shared.frontmostApplication
+        prevApp = app ?? NSWorkspace.shared.frontmostApplication
         if let key = searchKey {
             search.stringValue = UserDefaults.standard.string(forKey: key) ?? ""
         } else {
@@ -131,10 +171,19 @@ open class PickerPanel<Item: Pickable>: NSPanel, NSTextFieldDelegate, NSTableVie
 
     @objc private func pick() {
         let row = table.selectedRow
-        guard row >= 0, row < filtered.count else { return }
-        let item = filtered[row]
-        dismiss()
-        pickHandler?(row, item)
+        if row >= 0, row < filtered.count {
+            let item = filtered[row]
+            dismiss()
+            pickHandler?(row, item)
+            return
+        }
+        // No results — offer the typed query to an empty-pick handler.
+        if filtered.isEmpty, let handler = emptyHandler {
+            let q = search.stringValue
+            guard !q.isEmpty else { return }
+            dismiss()
+            handler(q)
+        }
     }
 
     // MARK: - NSTextFieldDelegate

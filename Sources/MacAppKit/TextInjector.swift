@@ -26,14 +26,16 @@ public enum TextInjector {
     ///   `eventSourceUserData` field, so callers running a `CGEventTap`
     ///   (e.g. key remappers) can skip their own synthetic events. Pass nil
     ///   to emit untagged events.
+    /// - Parameter charDelay: Pause between per-char key events, so receivers
+    ///   that do heavy work per keystroke keep up. Doesn't block the caller.
     /// - Returns: `false` if the event source could not be created and nothing
     ///   was posted; `true` otherwise (including for empty input).
     @discardableResult
-    public static func inject(_ text: String, marker: Int64? = nil) -> Bool {
+    public static func inject(_ text: String, marker: Int64? = nil, charDelay: Duration = .zero) -> Bool {
         guard !text.isEmpty else { return true }
         let map = charCodeMap()
         if text.allSatisfy({ map[$0] != nil }) {
-            return injectKeys(text, map: map, marker: marker)
+            return injectKeys(text, map: map, marker: marker, charDelay: charDelay)
         }
         // Any unresolvable char (emoji, CJK, accents not on the layout) forces a
         // single paste for the whole text. Per-char pastes would race the
@@ -57,23 +59,26 @@ public enum TextInjector {
 
     private static func injectKeys(_ text: String,
                                    map: [Character: (code: UInt16, shift: Bool)],
-                                   marker: Int64?) -> Bool {
+                                   marker: Int64?, charDelay: Duration) -> Bool {
         guard let source = CGEventSource(stateID: .hidSystemState) else { return false }
-        for ch in text {
-            guard let (code, shift) = map[ch] else { return false }
-            var utf16 = [UniChar](String(ch).utf16)
-            guard let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
-                  let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else { return false }
-            down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-            up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
-            if shift {
-                down.flags.insert(.maskShift); up.flags.insert(.maskShift)
-            } else {
-                down.flags.subtract(.maskShift); up.flags.subtract(.maskShift)
+        Task {
+            for ch in text {
+                guard let (code, shift) = map[ch] else { return }
+                var utf16 = [UniChar](String(ch).utf16)
+                guard let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
+                      let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else { return }
+                down.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+                up.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: &utf16)
+                if shift {
+                    down.flags.insert(.maskShift); up.flags.insert(.maskShift)
+                } else {
+                    down.flags.subtract(.maskShift); up.flags.subtract(.maskShift)
+                }
+                tag(down, marker: marker); tag(up, marker: marker)
+                down.post(tap: .cgAnnotatedSessionEventTap)
+                up.post(tap: .cgAnnotatedSessionEventTap)
+                try? await Task.sleep(for: charDelay)
             }
-            tag(down, marker: marker); tag(up, marker: marker)
-            down.post(tap: .cgAnnotatedSessionEventTap)
-            up.post(tap: .cgAnnotatedSessionEventTap)
         }
         return true
     }
